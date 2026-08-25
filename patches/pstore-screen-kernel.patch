@@ -1,0 +1,404 @@
+diff --git a/drivers/misc/Kconfig b/drivers/misc/Kconfig
+index c4b89fb8590c..a812c3a6210a 100644
+--- a/drivers/misc/Kconfig
++++ b/drivers/misc/Kconfig
+@@ -528,6 +528,7 @@ source "drivers/misc/bcm-vk/Kconfig"
+ source "drivers/misc/cardreader/Kconfig"
+ source "drivers/misc/habanalabs/Kconfig"
+ source "drivers/misc/uacce/Kconfig"
++source "drivers/misc/pstore_screen/Kconfig"
+ source "drivers/misc/pvpanic/Kconfig"
+ source "drivers/misc/mchp_pci1xxxx/Kconfig"
+ endmenu
+diff --git a/drivers/misc/Makefile b/drivers/misc/Makefile
+index 72b154bd9ebc..71cc4b29e356 100644
+--- a/drivers/misc/Makefile
++++ b/drivers/misc/Makefile
+@@ -63,3 +63,4 @@ obj-$(CONFIG_OPEN_DICE)		+= open-dice.o
+ obj-$(CONFIG_GP_PCI1XXXX)	+= mchp_pci1xxxx/
+ obj-$(CONFIG_VCPU_STALL_DETECTOR)	+= vcpu_stall_detector.o
+ obj-$(CONFIG_UID_SYS_STATS)	+= uid_sys_stats.o
++obj-$(CONFIG_PSTORE_SCREEN)	+= pstore_screen/
+diff --git a/drivers/video/fbdev/simplefb.c b/drivers/video/fbdev/simplefb.c
+index e770b4a356b5..172255c792ca 100644
+--- a/drivers/video/fbdev/simplefb.c
++++ b/drivers/video/fbdev/simplefb.c
+@@ -17,6 +17,7 @@
+ #include <linux/io.h>
+ #include <linux/module.h>
+ #include <linux/platform_data/simplefb.h>
++#include <linux/pstore_screen.h>
+ #include <linux/platform_device.h>
+ #include <linux/clk.h>
+ #include <linux/of.h>
+@@ -68,6 +69,7 @@ static int simplefb_setcolreg(u_int regno, u_int red, u_int green, u_int blue,
+ 
+ struct simplefb_par {
+ 	u32 palette[PSEUDO_PALETTE_SIZE];
++	struct pstore_screen_display_handle *pstore_screen;
+ 	struct resource *mem;
+ #if defined CONFIG_OF && defined CONFIG_COMMON_CLK
+ 	bool clks_enabled;
+@@ -83,6 +85,7 @@ struct simplefb_par {
+ 
+ static void simplefb_clocks_destroy(struct simplefb_par *par);
+ static void simplefb_regulators_destroy(struct simplefb_par *par);
++static void simplefb_pstore_screen_unregister(struct fb_info *info);
+ 
+ /*
+  * fb_ops.fb_destroy is called by the last put_fb_info() call at the end
+@@ -90,6 +93,7 @@ static void simplefb_regulators_destroy(struct simplefb_par *par);
+  */
+ static void simplefb_destroy(struct fb_info *info)
+ {
++	simplefb_pstore_screen_unregister(info);
+ 	struct simplefb_par *par = info->par;
+ 	struct resource *mem = par->mem;
+ 
+@@ -122,6 +126,53 @@ struct simplefb_params {
+ 	struct simplefb_format *format;
+ };
+ 
++static void simplefb_pstore_screen_unregister(struct fb_info *info)
++{
++	struct simplefb_par *par = info->par;
++	struct pstore_screen_display_handle *handle;
++
++	handle = xchg(&par->pstore_screen, NULL);
++	pstore_screen_display_unregister(handle);
++}
++
++static void simplefb_pstore_screen_register(struct platform_device *pdev,
++						 struct fb_info *info,
++						 const struct simplefb_params *params)
++{
++	struct simplefb_par *par = info->par;
++	struct pstore_screen_display_desc desc = {
++		.size = sizeof(desc),
++		.version = PSTORE_SCREEN_DISPLAY_DESC_VERSION,
++		.name = dev_name(&pdev->dev),
++		.stage = PSTORE_SCREEN_STAGE_FIRMWARE,
++		.priority = PSTORE_SCREEN_PRIORITY_FIRMWARE,
++		.flags = PSTORE_SCREEN_PROVIDER_ACTIVE_SCANOUT,
++		.scanout = {
++			.map_kind = PSTORE_SCREEN_MAP_IOMEM,
++			.format = params->format->fourcc,
++			.width = params->width,
++			.height = params->height,
++			.pitch = params->stride,
++			.length = info->fix.smem_len,
++			.address.io = info->screen_base,
++		},
++	};
++	u32 width_mm = 0;
++	u32 height_mm = 0;
++	int ret;
++
++	if (pdev->dev.of_node) {
++		of_property_read_u32(pdev->dev.of_node, "width-mm", &width_mm);
++		of_property_read_u32(pdev->dev.of_node, "height-mm", &height_mm);
++	}
++	desc.scanout.width_mm = width_mm;
++	desc.scanout.height_mm = height_mm;
++	ret = pstore_screen_display_register(&desc, &par->pstore_screen);
++	if (ret && ret != -EOPNOTSUPP)
++		dev_warn(&pdev->dev,
++			 "pstore screen rejected simplefb scanout: %d\n", ret);
++}
++
+ static int simplefb_parse_dt(struct platform_device *pdev,
+ 			   struct simplefb_params *params)
+ {
+@@ -517,6 +568,7 @@ static int simplefb_probe(struct platform_device *pdev)
+ 		goto error_regulators;
+ 	}
+ 
++	simplefb_pstore_screen_register(pdev, info, &params);
+ 	dev_info(&pdev->dev, "fb%d: simplefb registered!\n", info->node);
+ 
+ 	return 0;
+@@ -540,6 +592,7 @@ static int simplefb_remove(struct platform_device *pdev)
+ 	struct fb_info *info = platform_get_drvdata(pdev);
+ 
+ 	/* simplefb_destroy takes care of info cleanup */
++	simplefb_pstore_screen_unregister(info);
+ 	unregister_framebuffer(info);
+ 
+ 	return 0;
+@@ -565,3 +618,5 @@ module_platform_driver(simplefb_driver);
+ MODULE_AUTHOR("Stephen Warren <swarren@wwwdotorg.org>");
+ MODULE_DESCRIPTION("Simple framebuffer driver");
+ MODULE_LICENSE("GPL v2");
++
++MODULE_IMPORT_NS(PSTORE_SCREEN);
+diff --git a/fs/pstore/platform.c b/fs/pstore/platform.c
+index 0c034ea39954..8dc6c98cff44 100644
+--- a/fs/pstore/platform.c
++++ b/fs/pstore/platform.c
+@@ -16,6 +16,7 @@
+ #include <linux/console.h>
+ #include <linux/module.h>
+ #include <linux/pstore.h>
++#include <linux/pstore_screen_log.h>
+ #if IS_ENABLED(CONFIG_PSTORE_LZO_COMPRESS)
+ #include <linux/lzo.h>
+ #endif
+@@ -654,6 +655,9 @@ void pstore_unregister(struct pstore_info *psi)
+ 	del_timer_sync(&pstore_timer);
+ 	flush_work(&pstore_work);
+ 
++	/* No scan producer remains after timer/work quiescence. */
++	pstore_screen_log_mirror_invalidate();
++
+ 	/* Remove all backend records from filesystem tree. */
+ 	pstore_put_backend_records(psi);
+ 
+@@ -731,14 +735,19 @@ void pstore_get_backend_records(struct pstore_info *psi,
+ 				struct dentry *root, int quiet)
+ {
+ 	int failed = 0;
++	u32 mirror_events = 0;
+ 	unsigned int stop_loop = 65536;
+ 
+ 	if (!psi || !root)
+ 		return;
+ 
+ 	mutex_lock(&psi->read_mutex);
+-	if (psi->open && psi->open(psi))
++	pstore_screen_log_mirror_scan_begin();
++	if (psi->open && psi->open(psi)) {
++		mirror_events |= PSTORE_SCREEN_MIRROR_EVENT_BACKEND_READ_FAILURE |
++			PSTORE_SCREEN_MIRROR_EVENT_SCAN_INCOMPLETE;
+ 		goto out;
++	}
+ 
+ 	/*
+ 	 * Backend callback read() allocates record.buf. decompress_record()
+@@ -747,11 +756,14 @@ void pstore_get_backend_records(struct pstore_info *psi,
+ 	 */
+ 	for (; stop_loop; stop_loop--) {
+ 		struct pstore_record *record;
++		bool was_compressed;
+ 		int rc;
+ 
+ 		record = kzalloc(sizeof(*record), GFP_KERNEL);
+ 		if (!record) {
+ 			pr_err("out of memory creating record\n");
++			mirror_events |=
++				PSTORE_SCREEN_MIRROR_EVENT_SCAN_INCOMPLETE;
+ 			break;
+ 		}
+ 		pstore_record_init(record, psi);
+@@ -760,11 +772,18 @@ void pstore_get_backend_records(struct pstore_info *psi,
+ 
+ 		/* No more records left in backend? */
+ 		if (record->size <= 0) {
++			if (record->size < 0)
++				mirror_events |=
++					PSTORE_SCREEN_MIRROR_EVENT_BACKEND_READ_FAILURE |
++					PSTORE_SCREEN_MIRROR_EVENT_SCAN_INCOMPLETE;
+ 			kfree(record);
+ 			break;
+ 		}
+ 
++		was_compressed = record->compressed;
+ 		decompress_record(record);
++		pstore_screen_log_mirror_record(record, was_compressed,
++						zbackend ? zbackend->name : compress);
+ 		rc = pstore_mkfile(root, record);
+ 		if (rc) {
+ 			/* pstore_mkfile() did not take record, so free it. */
+@@ -775,9 +794,14 @@ void pstore_get_backend_records(struct pstore_info *psi,
+ 				failed++;
+ 		}
+ 	}
+-	if (psi->close)
+-		psi->close(psi);
++	if (psi->close && psi->close(psi))
++		mirror_events |=
++			PSTORE_SCREEN_MIRROR_EVENT_BACKEND_READ_FAILURE |
++			PSTORE_SCREEN_MIRROR_EVENT_SCAN_INCOMPLETE;
+ out:
++	if (!stop_loop)
++		mirror_events |= PSTORE_SCREEN_MIRROR_EVENT_SCAN_INCOMPLETE;
++	pstore_screen_log_mirror_scan_end(mirror_events);
+ 	mutex_unlock(&psi->read_mutex);
+ 
+ 	if (failed)
+diff --git a/kernel/panic.c b/kernel/panic.c
+index 63e94f3bd8dc..9056d8c90ecb 100644
+--- a/kernel/panic.c
++++ b/kernel/panic.c
+@@ -14,6 +14,8 @@
+ #include <linux/interrupt.h>
+ #include <linux/kgdb.h>
+ #include <linux/kmsg_dump.h>
++#include <linux/pstore_screen_log.h>
++#include <linux/pstore_screen_panic.h>
+ #include <linux/kallsyms.h>
+ #include <linux/notifier.h>
+ #include <linux/vt_kern.h>
+@@ -277,6 +279,9 @@ void panic(const char *fmt, ...)
+ 	static char buf[1024];
+ 	va_list args;
+ 	long i, i_next = 0, len;
++#if IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE)
++	int format_ret;
++#endif
+ 	int state = 0;
+ 	int old_cpu, this_cpu;
+ 	bool _crash_kexec_post_notifiers = crash_kexec_post_notifiers;
+@@ -324,8 +329,19 @@ void panic(const char *fmt, ...)
+ 	console_verbose();
+ 	bust_spinlocks(1);
+ 	va_start(args, fmt);
++#if IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE)
++	format_ret = vsnprintf(buf, sizeof(buf), fmt, args);
++	va_end(args);
++	if (format_ret < 0)
++		buf[0] = '\0';
++	len = clamp_t(long, format_ret, 0, sizeof(buf) - 1);
++	pstore_screen_log_panic_capture(buf, len,
++					format_ret < 0 ||
++					format_ret >= (int)sizeof(buf));
++#else
+ 	len = vscnprintf(buf, sizeof(buf), fmt, args);
+ 	va_end(args);
++#endif
+ 
+ 	if (len && buf[len - 1] == '\n')
+ 		buf[len - 1] = '\0';
+@@ -369,6 +385,11 @@ void panic(const char *fmt, ...)
+ 
+ 	kmsg_dump(KMSG_DUMP_PANIC);
+ 
++#if IS_ENABLED(CONFIG_PSTORE_SCREEN_PANIC)
++	if (!pstore_screen_panic_start())
++		pstore_screen_panic_wait();
++#endif
++
+ 	/*
+ 	 * If you doubt kdump always works fine in any situation,
+ 	 * "crash_kexec_post_notifiers" offers you a chance to run
+diff --git a/kernel/printk/printk.c b/kernel/printk/printk.c
+index d2032ef7c865..2dd41ee64b19 100644
+--- a/kernel/printk/printk.c
++++ b/kernel/printk/printk.c
+@@ -37,6 +37,7 @@
+ #include <linux/crash_core.h>
+ #include <linux/ratelimit.h>
+ #include <linux/kmsg_dump.h>
++#include <linux/pstore_screen_log.h>
+ #include <linux/syslog.h>
+ #include <linux/cpu.h>
+ #include <linux/rculist.h>
+@@ -427,6 +428,29 @@ static struct printk_ringbuffer printk_rb_dynamic;
+ 
+ static struct printk_ringbuffer *prb = &printk_rb_static;
+ 
++#if IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE)
++static bool pstore_screen_dynamic_ring_ready;
++
++bool pstore_screen_printk_ring_ready(void)
++{
++	/* Pair with the release after the dynamic ring is activated. */
++	return smp_load_acquire(&pstore_screen_dynamic_ring_ready);
++}
++
++void pstore_screen_printk_snapshot_window(struct kmsg_dump_iter *iter)
++{
++	u64 start_seq;
++	u64 end_seq;
++
++	BUILD_BUG_ON(PSTORE_SCREEN_MAX_FORMATTED_RECORD_BYTES <
++		     (PREFIX_MAX + 1U) * (LOG_LINE_MAX + 1U));
++	start_seq = prb_first_valid_seq(prb);
++	end_seq = prb_next_seq(prb);
++	WRITE_ONCE(iter->cur_seq, start_seq);
++	WRITE_ONCE(iter->next_seq, end_seq);
++}
++#endif
++
+ /*
+  * We cannot access per-CPU data (e.g. per-CPU flush irq_work) before
+  * per_cpu_areas are initialised. This variable is set to true when
+@@ -1099,10 +1123,21 @@ void __init setup_log_buf(int early)
+ 	if (!early && !new_log_buf_len)
+ 		log_buf_add_cpu();
+ 
++	if (!early && IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE) &&
++	    !new_log_buf_len)
++		new_log_buf_len = __LOG_BUF_LEN;
++
+ 	if (!new_log_buf_len)
+ 		return;
+ 
++	if (IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE) &&
++	    new_log_buf_len < __LOG_BUF_LEN)
++		new_log_buf_len = __LOG_BUF_LEN;
++
+ 	new_descs_count = new_log_buf_len >> PRB_AVGBITS;
++	if (IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE) &&
++	    new_descs_count < PSTORE_SCREEN_MIN_DESCRIPTORS)
++		new_descs_count = PSTORE_SCREEN_MIN_DESCRIPTORS;
+ 	if (new_descs_count == 0) {
+ 		pr_err("new_log_buf_len: %lu too small\n", new_log_buf_len);
+ 		return;
+@@ -1154,6 +1189,12 @@ void __init setup_log_buf(int early)
+ 	}
+ 
+ 	prb = &printk_rb_dynamic;
++#if IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE)
++	/* Publish only after prb names the initialized dynamic ring. */
++	smp_store_release(&pstore_screen_dynamic_ring_ready,
++			  log_buf_len >= __LOG_BUF_LEN &&
++			  new_descs_count >= PSTORE_SCREEN_MIN_DESCRIPTORS);
++#endif
+ 
+ 	local_irq_restore(flags);
+ 
+@@ -1655,6 +1696,44 @@ static void syslog_clear(void)
+ 	mutex_unlock(&syslog_lock);
+ }
+ 
++#if IS_ENABLED(CONFIG_PSTORE_SCREEN_LOG_CAPTURE) && \
++	defined(CONFIG_PSTORE_SCREEN_LOG_KUNIT_TEST)
++void pstore_screen_printk_clear_for_test(void)
++{
++	syslog_clear();
++}
++
++u64 pstore_screen_printk_next_seq_for_test(void)
++{
++	return prb_next_seq(prb);
++}
++
++int pstore_screen_printk_record_lengths_for_test(u64 seq, char *buf,
++						 size_t capacity,
++						 size_t *formatted_len,
++						 size_t *required_len)
++{
++	struct printk_info read_info;
++	struct printk_info size_info;
++	unsigned int line_count;
++	struct printk_record record;
++
++	if (!buf || !formatted_len || !required_len ||
++	    capacity < PSTORE_SCREEN_MAX_FORMATTED_RECORD_BYTES + 1U)
++		return -EINVAL;
++	if (!prb_read_valid_info(prb, seq, &size_info, &line_count) ||
++	    size_info.seq != seq)
++		return -ENOENT;
++	*required_len = get_record_print_text_size(&size_info, line_count,
++						   true, printk_time);
++	prb_rec_init_rd(&record, &read_info, buf, capacity);
++	if (!prb_read_valid(prb, seq, &record) || read_info.seq != seq)
++		return -ESTALE;
++	*formatted_len = record_print_text(&record, true, printk_time);
++	return 0;
++}
++#endif
++
+ int do_syslog(int type, char __user *buf, int len, int source)
+ {
+ 	struct printk_info info;
