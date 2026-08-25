@@ -1,0 +1,25 @@
+diff --git a/android/abi_gki_aarch64_pstore_screen b/android/abi_gki_aarch64_pstore_screen
+new file mode 100644
+index 000000000000..dae528ce1882
+--- /dev/null
++++ b/android/abi_gki_aarch64_pstore_screen
+@@ -0,0 +1,7 @@
++[abi_symbol_list]
++  pstore_screen_display_register
++  pstore_screen_display_unregister
++  pstore_screen_drm_sidecar_register
++  pstore_screen_drm_sidecar_unregister
++  pstore_screen_panic_start
++  pstore_screen_panic_wait
+diff --git a/build.config.gki.aarch64 b/build.config.gki.aarch64
+index 3890e74b53f9..2fda0eefd4b1 100644
+--- a/build.config.gki.aarch64
++++ b/build.config.gki.aarch64
+@@ -38,6 +38,7 @@ arch/arm64/boot/Image.lz4
+ "
+ 
+ TRIM_NONLISTED_KMI=${TRIM_NONLISTED_KMI:-1}
++android/abi_gki_aarch64_pstore_screen
+ KMI_SYMBOL_LIST_STRICT_MODE=${KMI_SYMBOL_LIST_STRICT_MODE:-1}
+ MODULES_ORDER=android/gki_aarch64_modules
+ KMI_ENFORCED=1

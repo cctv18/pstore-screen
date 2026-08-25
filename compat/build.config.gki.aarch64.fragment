@@ -1,0 +1,3 @@
+ADDITIONAL_KMI_SYMBOL_LISTS="${ADDITIONAL_KMI_SYMBOL_LISTS}
+android/abi_gki_aarch64_pstore_screen
+"
