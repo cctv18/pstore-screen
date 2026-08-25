@@ -1,0 +1,20 @@
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -202,6 +202,7 @@
+         "gki/aarch64/symbols/oplus",
+         "gki/aarch64/symbols/pixel",
+         "gki/aarch64/symbols/pixel_watch",
++        "gki/aarch64/symbols/pstore_screen",
+         "gki/aarch64/symbols/qcom",
+         "gki/aarch64/symbols/rockchip",
+         "gki/aarch64/symbols/rtkstb",
+--- /dev/null
++++ b/gki/aarch64/symbols/pstore_screen
+@@ -0,0 +1,7 @@
++[abi_symbol_list]
++  pstore_screen_display_register
++  pstore_screen_display_unregister
++  pstore_screen_drm_sidecar_register
++  pstore_screen_drm_sidecar_unregister
++  pstore_screen_panic_start
++  pstore_screen_panic_wait
