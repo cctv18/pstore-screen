@@ -1,0 +1,20 @@
+--- a/BUILD.bazel
++++ b/BUILD.bazel
+@@ -142,6 +142,7 @@
+         "android/abi_gki_aarch64_vivo",
+         "android/abi_gki_aarch64_xiaomi",
+         "android/abi_gki_aarch64_xiaomi_xring",
++        "android/abi_gki_aarch64_pstore_screen",
+     ],
+     visibility = ["//visibility:public"],
+ )
+--- /dev/null
++++ b/android/abi_gki_aarch64_pstore_screen
+@@ -0,0 +1,7 @@
++[abi_symbol_list]
++  pstore_screen_display_register
++  pstore_screen_display_unregister
++  pstore_screen_drm_sidecar_register
++  pstore_screen_drm_sidecar_unregister
++  pstore_screen_panic_start
++  pstore_screen_panic_wait
