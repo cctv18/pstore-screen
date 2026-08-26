@@ -39,6 +39,7 @@ cat ./pstore_screen_config >> ./arch/arm64/configs/gki_defconfig
 ```
 
 注：在极少数情况下，若内核 DRM 驱动为模块形式（`CONFIG_DRM=m`）且希望将该驱动构建入 DRM 驱动模块，则应额外开启 DRM sidecar 模式（`CONFIG_PSTORE_SCREEN_DRM_SIDECAR=y`，）但由于模块加载时机问题，可能无法显示早期内核崩溃日志；
+
 4. 若要为 bazel/build.sh 构建提供兼容并持久集成，建议额外导入 `compat/` 下的补丁；
 5. 按 GKI 内核构建流程编译内核。
 
